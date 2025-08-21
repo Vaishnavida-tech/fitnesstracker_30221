@@ -1,0 +1,164 @@
+import psycopg2
+from datetime import datetime, timedelta
+
+class DatabaseManager:
+    def __init__(self, dbname, user, password, host):
+        self.conn = None
+        self.cursor = None
+        self.dbname = dbname
+        self.user = user
+        self.password = password
+        self.host = host
+
+    def connect(self):
+        """Establishes a connection to the PostgreSQL database."""
+        try:
+            self.conn = psycopg2.connect(
+                dbname=self.dbname,
+                user=self.user,
+                password=self.password,
+                host=self.host
+            )
+            self.cursor = self.conn.cursor()
+            return True
+        except psycopg2.Error as e:
+            print(f"Error connecting to the database: {e}")
+            return False
+
+    def disconnect(self):
+        """Closes the database connection."""
+        if self.cursor:
+            self.cursor.close()
+        if self.conn:
+            self.conn.close()
+
+    # --- User Profile (CRUD) ---
+
+    def create_user(self, name, email, goal=None):
+        """Creates a new user profile."""
+        try:
+            query = "INSERT INTO users (name, email, goal) VALUES (%s, %s, %s) RETURNING user_id;"
+            self.cursor.execute(query, (name, email, goal))
+            user_id = self.cursor.fetchone()[0]
+            self.conn.commit()
+            return user_id
+        except psycopg2.Error as e:
+            self.conn.rollback()
+            print(f"Error creating user: {e}")
+            return None
+
+    def get_user_by_email(self, email):
+        """Retrieves a user's details by email."""
+        try:
+            query = "SELECT user_id, name, email, goal FROM users WHERE email = %s;"
+            self.cursor.execute(query, (email,))
+            return self.cursor.fetchone()
+        except psycopg2.Error as e:
+            print(f"Error getting user: {e}")
+            return None
+            
+    # --- Workout Logging (CRUD) ---
+
+    def create_workout(self, user_id, date, duration, notes):
+        """Logs a new workout for a user."""
+        try:
+            query = "INSERT INTO workouts (user_id, workout_date, duration_minutes, notes) VALUES (%s, %s, %s, %s) RETURNING workout_id;"
+            self.cursor.execute(query, (user_id, date, duration, notes))
+            workout_id = self.cursor.fetchone()[0]
+            self.conn.commit()
+            return workout_id
+        except psycopg2.Error as e:
+            self.conn.rollback()
+            print(f"Error logging workout: {e}")
+            return None
+
+    def create_exercise(self, workout_id, name, sets, reps, weight):
+        """Adds an exercise to a specific workout."""
+        try:
+            query = "INSERT INTO exercises (workout_id, exercise_name, sets, reps, weight_kg) VALUES (%s, %s, %s, %s, %s);"
+            self.cursor.execute(query, (workout_id, name, sets, reps, weight))
+            self.conn.commit()
+            return True
+        except psycopg2.Error as e:
+            self.conn.rollback()
+            print(f"Error creating exercise: {e}")
+            return False
+
+    def get_user_workouts(self, user_id):
+        """Retrieves a user's workout history."""
+        try:
+            query = "SELECT * FROM workouts WHERE user_id = %s ORDER BY workout_date DESC;"
+            self.cursor.execute(query, (user_id,))
+            return self.cursor.fetchall()
+        except psycopg2.Error as e:
+            print(f"Error getting workouts: {e}")
+            return None
+
+    def get_exercises_for_workout(self, workout_id):
+        """Retrieves all exercises for a specific workout."""
+        try:
+            query = "SELECT exercise_name, sets, reps, weight_kg FROM exercises WHERE workout_id = %s;"
+            self.cursor.execute(query, (workout_id,))
+            return self.cursor.fetchall()
+        except psycopg2.Error as e:
+            print(f"Error getting exercises: {e}")
+            return None
+
+    # --- Business Insights & Leaderboard ---
+
+    def get_weekly_leaderboard(self):
+        """Generates a dynamic leaderboard based on total workout duration this week."""
+        try:
+            # Get the start of the current week (Sunday)
+            today = datetime.now().date()
+            start_of_week = today - timedelta(days=today.weekday())
+
+            query = """
+            SELECT u.name, SUM(w.duration_minutes) AS total_duration
+            FROM workouts w
+            JOIN users u ON w.user_id = u.user_id
+            WHERE w.workout_date >= %s
+            GROUP BY u.name
+            ORDER BY total_duration DESC;
+            """
+            self.cursor.execute(query, (start_of_week,))
+            return self.cursor.fetchall()
+        except psycopg2.Error as e:
+            print(f"Error generating leaderboard: {e}")
+            return None
+
+    def get_workout_stats(self, user_id):
+        """Provides statistics for a user's workouts."""
+        try:
+            # Total workouts (COUNT)
+            query_total = "SELECT COUNT(*) FROM workouts WHERE user_id = %s;"
+            self.cursor.execute(query_total, (user_id,))
+            total_workouts = self.cursor.fetchone()[0]
+
+            # Total duration (SUM)
+            query_duration = "SELECT SUM(duration_minutes) FROM workouts WHERE user_id = %s;"
+            self.cursor.execute(query_duration, (user_id,))
+            total_duration = self.cursor.fetchone()[0] or 0
+
+            # Avg duration (AVG)
+            query_avg_duration = "SELECT AVG(duration_minutes) FROM workouts WHERE user_id = %s;"
+            self.cursor.execute(query_avg_duration, (user_id,))
+            avg_duration = self.cursor.fetchone()[0] or 0.0
+
+            # Max/Min duration (MAX, MIN)
+            query_max_min = "SELECT MAX(duration_minutes), MIN(duration_minutes) FROM workouts WHERE user_id = %s;"
+            self.cursor.execute(query_max_min, (user_id,))
+            max_min_duration = self.cursor.fetchone()
+            max_duration = max_min_duration[0] or 0
+            min_duration = max_min_duration[1] or 0
+
+            return {
+                "total_workouts": total_workouts,
+                "total_duration": total_duration,
+                "avg_duration": avg_duration,
+                "max_duration": max_duration,
+                "min_duration": min_duration
+            }
+        except psycopg2.Error as e:
+            print(f"Error getting workout stats: {e}")
+            return None
